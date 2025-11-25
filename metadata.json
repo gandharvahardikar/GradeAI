@@ -1,0 +1,5 @@
+{
+  "name": "AutoGrade AI - Handwritten Assessment",
+  "description": "An automated pipeline for assessing handwritten assignments using OCR, NLP, and ML simulation powered by Gemini.",
+  "requestFramePermissions": []
+}
