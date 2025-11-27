@@ -8,69 +8,125 @@ export const assessAssignment = async (
 ): Promise<AssessmentResult> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+  // Handle files that might be URLs (Firebase Storage) or Base64
+  const processedStudentFiles = await Promise.all(studentFiles.map(async (file) => {
+    if (file.data) return file;
+    if (file.url) {
+      try {
+        const response = await fetch(file.url);
+        const blob = await response.blob();
+        return new Promise<AttachedFile>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const base64data = reader.result?.toString().split(',')[1];
+                resolve({ ...file, data: base64data });
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+      } catch (e) {
+        console.error("Failed to fetch file from URL", e);
+        return file;
+      }
+    }
+    return file;
+  }));
+
   // Construct the parts for the model
   const contentParts: any[] = [];
 
-  // 1. Instructions
+  // 1. Instructions: strictly defining the ML Pipeline steps with Multi-Source OCR and Question Validation
   const systemPrompt = `
-    You are an automated academic grading system. 
-    
-    Your task is to:
-    1. Analyze the provided STUDENT ANSWER (which may consist of multiple image/pdf pages).
-    2. Perform accurate OCR to extract the handwritten text from ALL pages.
-    3. Compare the extracted text with the provided MODEL ANSWER KEY.
-    4. Calculate a Semantic Similarity Score (0-100).
-    5. Assign a Final ML Grade (0-100) based on correctness, completeness, and clarity.
-    6. Provide constructive feedback.
-    7. List key concepts from the model answer that were found in the student's text, and those that were missed.
+    You are an expert Automated Grading System powered by multimodal AI.
+    Your goal is to perform a high-precision assessment of handwritten student assignments.
+
+    --- INPUT SOURCES ---
+    1. MODEL ANSWER KEY: The ground truth. Can be provided as plain text OR as images/PDFs.
+    2. QUESTION PAPER: The original questions. Critical for "Per-Question Grading".
+    3. STUDENT ANSWER SHEET: The handwritten submission to be graded.
+
+    --- PROCESSING PIPELINE (Execute Logically) ---
+
+    PHASE 1: QUESTION PAPER PARSING & OCR
+    1.  **Analyze the Question Paper**: Identify specific Question Numbers (e.g., Q1, Q2, 1a, 1b) and their allocated Maximum Marks.
+    2.  **Model Answer OCR**: Extract the correct answer content to establish the Ground Truth.
+    3.  **Student Answer OCR**: Transcribe the student's handwritten text.
+
+    PHASE 2: QUESTION-WISE GRADING & VALIDATION
+    1.  **Map Answers**: Match the student's responses to the specific questions found in the Question Paper.
+    2.  **Validate**: Check if the student attempted the question.
+    3.  **Score**: Assign marks for EACH question based on:
+        - Correctness against Model Answer.
+        - Completeness of derivation/explanation.
+    4.  **Remark**: Provide a brief reason for the marks given for that specific question.
+
+    PHASE 3: OVERALL ML METRICS
+    Calculate the overall metrics for the entire paper:
+    - **Similarity Score** (0-100): Semantic alignment with model answer.
+    - **Correctness (40%)**: Factual accuracy.
+    - **Completeness (40%)**: Coverage of required points.
+    - **Clarity (20%)**: Legibility and structure.
+    - **Final ML Score**: The aggregate percentage score.
+
+    --- OUTPUT REQUIREMENT ---
+    Return the results strictly in JSON format matching the requested schema.
+    Ensure 'questionGrades' array contains an entry for every question identified in the Question Paper.
   `;
   
   contentParts.push({ text: systemPrompt });
 
   // 2. Model Answer Data
-  contentParts.push({ text: "\n\n--- MODEL ANSWER KEY (Truth) ---" });
+  contentParts.push({ text: "\n\n--- INPUT: MODEL ANSWER KEY (Ground Truth) ---" });
   
   if (config.modelAnswerType === 'text') {
     contentParts.push({ text: config.modelAnswerText });
   } else {
-    contentParts.push({ text: "Refer to the following attached document(s) for the Model Answer Key:" });
+    contentParts.push({ text: "Refer to the following attached document(s) for the Model Answer Key. Perform OCR on these to establish the Ground Truth:" });
     config.modelAnswerFiles.forEach(file => {
-      contentParts.push({
-        inlineData: {
-          data: file.data,
-          mimeType: file.mimeType
-        }
-      });
+      if (file.data) {
+        contentParts.push({
+            inlineData: {
+            data: file.data,
+            mimeType: file.mimeType
+            }
+        });
+      }
     });
   }
 
   // 3. Question Paper Data (Optional Context)
   if (config.questionPaperFiles.length > 0) {
-    contentParts.push({ text: "\n\n--- ORIGINAL QUESTION PAPER (Reference) ---" });
+    contentParts.push({ text: "\n\n--- INPUT: ORIGINAL QUESTION PAPER (Reference Context for Max Marks) ---" });
     config.questionPaperFiles.forEach(file => {
-      contentParts.push({
-        inlineData: {
-          data: file.data,
-          mimeType: file.mimeType
+        if (file.data) {
+            contentParts.push({
+                inlineData: {
+                data: file.data,
+                mimeType: file.mimeType
+                }
+            });
         }
-      });
     });
+  } else {
+    contentParts.push({ text: "No separate Question Paper file provided. Infer question structure from the Model Answer Key." });
   }
 
   // 4. Student Submission
-  contentParts.push({ text: "\n\n--- STUDENT SUBMISSION TO GRADE ---" });
-  if (studentFiles.length > 1) {
-    contentParts.push({ text: "The student submission consists of the following multiple pages/files. Treat them as a single continuous answer." });
+  contentParts.push({ text: "\n\n--- INPUT: STUDENT ANSWER SHEET (To be graded) ---" });
+  if (processedStudentFiles.length > 1) {
+    contentParts.push({ text: "The student submission consists of the following multiple pages. Treat them as a single continuous answer." });
   }
 
-  studentFiles.forEach((file, index) => {
-    contentParts.push({ text: `\n[Student Submission Part ${index + 1}/${studentFiles.length}]` });
-    contentParts.push({
-      inlineData: {
-        data: file.data,
-        mimeType: file.mimeType,
-      },
-    });
+  processedStudentFiles.forEach((file, index) => {
+    if (file.data) {
+        contentParts.push({ text: `\n[Page ${index + 1}]` });
+        contentParts.push({
+        inlineData: {
+            data: file.data,
+            mimeType: file.mimeType,
+        },
+        });
+    }
   });
 
 
@@ -87,19 +143,43 @@ export const assessAssignment = async (
           properties: {
             extractedText: {
               type: Type.STRING,
-              description: "The combined raw text extracted from the student's handwritten document(s).",
+              description: "The raw text extracted via OCR from the student's handwritten document.",
             },
             similarityScore: {
               type: Type.NUMBER,
-              description: "A score from 0 to 100 indicating semantic similarity.",
+              description: "Semantic/Cosine similarity score (0-100) between Student Text and Model Answer Text.",
             },
             mlScore: {
               type: Type.NUMBER,
-              description: "The final grade from 0 to 100.",
+              description: "The final calculated weighted grade (0-100).",
+            },
+            mlScoreDetails: {
+              type: Type.OBJECT,
+              description: "Breakdown of the ML scoring metrics.",
+              properties: {
+                correctness: { type: Type.NUMBER, description: "Score for factual accuracy (0-100)." },
+                completeness: { type: Type.NUMBER, description: "Score for coverage of key points (0-100)." },
+                clarity: { type: Type.NUMBER, description: "Score for structure and legibility (0-100)." },
+              },
+              required: ["correctness", "completeness", "clarity"]
+            },
+            questionGrades: {
+              type: Type.ARRAY,
+              description: "Detailed grading for each question found in the question paper.",
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  questionNumber: { type: Type.STRING, description: "The question number (e.g., '1', '2a', 'Q3')." },
+                  maxMarks: { type: Type.NUMBER, description: "The maximum marks allocated for this question." },
+                  obtainedMarks: { type: Type.NUMBER, description: "The marks awarded to the student." },
+                  remarks: { type: Type.STRING, description: "Reasoning for the marks awarded." }
+                },
+                required: ["questionNumber", "maxMarks", "obtainedMarks", "remarks"]
+              }
             },
             feedback: {
               type: Type.STRING,
-              description: "Constructive feedback for the student.",
+              description: "Constructive feedback and explanation of the grade.",
             },
             keyConceptsFound: {
               type: Type.ARRAY,
@@ -116,6 +196,8 @@ export const assessAssignment = async (
             "extractedText",
             "similarityScore",
             "mlScore",
+            "mlScoreDetails",
+            "questionGrades",
             "feedback",
             "keyConceptsFound",
             "missedConcepts",

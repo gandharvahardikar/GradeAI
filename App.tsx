@@ -1,11 +1,10 @@
-
 import React, { useState, useEffect } from 'react';
-import { GraduationCap, Users, Activity } from 'lucide-react';
 import { TeacherDashboard } from './components/TeacherDashboard';
 import { StudentDashboard } from './components/StudentDashboard';
+import { LoginScreen } from './components/LoginScreen';
 import { UserRole, Subject, Submission, SubjectConfigs, SubjectConfig } from './types';
 
-// Initial Mock Data
+// Initial Seed Data (Used if LocalStorage is empty)
 const INITIAL_CONFIGS: SubjectConfigs = {
   'Physics': {
     modelAnswerType: 'text',
@@ -39,69 +38,74 @@ const INITIAL_SUBMISSIONS: Submission[] = [
     studentName: 'Alice Johnson',
     subject: 'Physics',
     score: 85,
-    timestamp: new Date(Date.now() - 86400000), // 1 day ago
-    result: {} as any // simplified for mock
-  },
-  {
-    id: '2',
-    studentName: 'Bob Smith',
-    subject: 'Physics',
-    score: 62,
-    timestamp: new Date(Date.now() - 40000000), // 12 hours ago
-    result: {} as any
+    timestamp: new Date('2024-03-10T10:00:00'),
+    result: {
+      extractedText: "Newton's second law says force equals mass times acceleration.",
+      similarityScore: 90,
+      mlScore: 85,
+      mlScoreDetails: { correctness: 90, completeness: 80, clarity: 85 },
+      questionGrades: [],
+      feedback: "Good understanding of the core concept.",
+      keyConceptsFound: ["Force", "Mass", "Acceleration"],
+      missedConcepts: ["Net force"]
+    }
   }
 ];
 
 const App: React.FC = () => {
   // Auth State
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [userName, setUserName] = useState<string>('');
   
-  // Data State (Simulating DB with LocalStorage)
+  // Data State (Managed via LocalStorage)
   const [currentSubject, setCurrentSubject] = useState<Subject>('Physics');
-  
-  const [subjectConfigs, setSubjectConfigs] = useState<SubjectConfigs>(() => {
-    try {
-      const saved = localStorage.getItem('autograde_configs');
-      return saved ? JSON.parse(saved) : INITIAL_CONFIGS;
-    } catch (e) {
-      console.error("Failed to load configs", e);
-      return INITIAL_CONFIGS;
-    }
-  });
+  const [subjectConfigs, setSubjectConfigs] = useState<SubjectConfigs>(INITIAL_CONFIGS);
+  const [submissions, setSubmissions] = useState<Submission[]>(INITIAL_SUBMISSIONS);
+  const [isLoaded, setIsLoaded] = useState(false);
 
-  const [submissions, setSubmissions] = useState<Submission[]>(() => {
-    try {
-      const saved = localStorage.getItem('autograde_submissions');
-      if (saved) {
-        // Hydrate date strings back to Date objects
-        return JSON.parse(saved).map((s: any) => ({
+  // 1. Initialize from LocalStorage
+  useEffect(() => {
+    // Restore Session
+    const savedSession = localStorage.getItem('autograde_session');
+    if (savedSession) {
+      try {
+        const { role, name } = JSON.parse(savedSession);
+        setUserRole(role);
+        setUserName(name);
+      } catch (e) {
+        console.error("Failed to restore session", e);
+      }
+    }
+
+    // Restore Data
+    const savedDb = localStorage.getItem('gradeai_db');
+    if (savedDb) {
+      try {
+        const parsed = JSON.parse(savedDb);
+        setSubjectConfigs(parsed.subjects || INITIAL_CONFIGS);
+        
+        // Rehydrate Dates in submissions
+        const hydratedSubmissions = (parsed.submissions || []).map((s: any) => ({
           ...s,
           timestamp: new Date(s.timestamp)
         }));
+        setSubmissions(hydratedSubmissions);
+      } catch (e) {
+        console.error("Failed to restore DB", e);
       }
-      return INITIAL_SUBMISSIONS;
-    } catch (e) {
-      console.error("Failed to load submissions", e);
-      return INITIAL_SUBMISSIONS;
     }
-  });
+    setIsLoaded(true);
+  }, []);
 
-  // Persistence Effects
+  // 2. Persist Data Updates to LocalStorage
   useEffect(() => {
-    try {
-      localStorage.setItem('autograde_configs', JSON.stringify(subjectConfigs));
-    } catch (e) {
-      console.warn("LocalStorage quota exceeded (likely due to file size). Data not saved.");
+    if (isLoaded) {
+      localStorage.setItem('gradeai_db', JSON.stringify({
+        subjects: subjectConfigs,
+        submissions: submissions
+      }));
     }
-  }, [subjectConfigs]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('autograde_submissions', JSON.stringify(submissions));
-    } catch (e) {
-      console.warn("LocalStorage quota exceeded. Submissions not saved.");
-    }
-  }, [submissions]);
+  }, [subjectConfigs, submissions, isLoaded]);
 
   // Handlers
   const handleConfigUpdate = (newConfig: SubjectConfig) => {
@@ -112,66 +116,62 @@ const App: React.FC = () => {
   };
 
   const handleNewSubmission = (submission: Submission) => {
-    setSubmissions(prev => [submission, ...prev]);
+    // Tag with authenticated user
+    const authenticatedSubmission: Submission = {
+      ...submission,
+      studentName: userName
+    };
+
+    setSubmissions(prev => [authenticatedSubmission, ...prev]);
+  };
+
+  const handleAddSubject = (subjectName: string) => {
+    if (subjectConfigs[subjectName]) return;
+    
+    setSubjectConfigs(prev => ({
+      ...prev,
+      [subjectName]: {
+        modelAnswerType: 'text',
+        modelAnswerText: '',
+        modelAnswerFiles: [],
+        questionPaperFiles: []
+      }
+    }));
+    setCurrentSubject(subjectName);
   };
 
   const handleResetData = () => {
-    if (confirm("Are you sure you want to reset all data? This will clear all submissions and custom answer keys.")) {
+    if (confirm("Are you sure you want to reset all data? This cannot be undone.")) {
+      localStorage.removeItem('gradeai_db');
       setSubjectConfigs(INITIAL_CONFIGS);
       setSubmissions(INITIAL_SUBMISSIONS);
-      localStorage.removeItem('autograde_configs');
-      localStorage.removeItem('autograde_submissions');
+      window.location.reload();
     }
   };
 
-  // Login Screen
-  if (!userRole) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 to-indigo-900 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full space-y-8">
-          <div className="text-center space-y-2">
-             <div className="bg-indigo-100 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4">
-               <Activity className="w-10 h-10 text-indigo-600" />
-             </div>
-             <h1 className="text-3xl font-bold text-slate-900">AutoGrade AI</h1>
-             <p className="text-slate-500">Automated Handwritten Assessment System</p>
-          </div>
+  const handleLogin = (role: UserRole, name: string) => {
+    setUserRole(role);
+    setUserName(name);
+    localStorage.setItem('autograde_session', JSON.stringify({ role, name }));
+  };
 
-          <div className="space-y-4 pt-4">
-            <p className="text-center text-sm font-medium text-slate-400 uppercase tracking-wider">Select your role</p>
-            
-            <button
-              onClick={() => setUserRole('teacher')}
-              className="w-full p-4 rounded-xl border-2 border-slate-100 hover:border-indigo-500 hover:bg-indigo-50 transition-all group flex items-center gap-4 text-left"
-            >
-              <div className="bg-indigo-100 p-3 rounded-full group-hover:scale-110 transition-transform">
-                <Users className="w-6 h-6 text-indigo-600" />
-              </div>
-              <div>
-                <h3 className="font-bold text-slate-800">Teacher Login</h3>
-                <p className="text-sm text-slate-500">Upload keys, monitor progress</p>
-              </div>
-            </button>
+  const handleLogout = () => {
+    setUserRole(null);
+    setUserName('');
+    localStorage.removeItem('autograde_session');
+  };
 
-            <button
-              onClick={() => setUserRole('student')}
-              className="w-full p-4 rounded-xl border-2 border-slate-100 hover:border-emerald-500 hover:bg-emerald-50 transition-all group flex items-center gap-4 text-left"
-            >
-              <div className="bg-emerald-100 p-3 rounded-full group-hover:scale-110 transition-transform">
-                <GraduationCap className="w-6 h-6 text-emerald-600" />
-              </div>
-              <div>
-                <h3 className="font-bold text-slate-800">Student Login</h3>
-                <p className="text-sm text-slate-500">Submit assignments, get grades</p>
-              </div>
-            </button>
-          </div>
-        </div>
-      </div>
-    );
+  if (!isLoaded) {
+    return <div className="min-h-screen flex items-center justify-center text-slate-500">Loading Local Database...</div>;
   }
 
-  // Application View based on Role
+  // Login Screen
+  if (!userRole) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
+
+  const availableSubjects = Object.keys(subjectConfigs);
+
   return (
     <>
       {userRole === 'teacher' ? (
@@ -182,7 +182,9 @@ const App: React.FC = () => {
           onConfigChange={handleConfigUpdate}
           submissions={submissions}
           onResetData={handleResetData}
-          onLogout={() => setUserRole(null)}
+          onLogout={handleLogout}
+          availableSubjects={availableSubjects}
+          onAddSubject={handleAddSubject}
         />
       ) : (
         <StudentDashboard
@@ -190,7 +192,10 @@ const App: React.FC = () => {
           onSubjectChange={setCurrentSubject}
           config={subjectConfigs[currentSubject]}
           onSubmissionComplete={handleNewSubmission}
-          onLogout={() => setUserRole(null)}
+          onLogout={handleLogout}
+          submissions={submissions}
+          studentName={userName}
+          availableSubjects={availableSubjects}
         />
       )}
     </>

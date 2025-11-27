@@ -1,8 +1,21 @@
 
+export interface QuestionGrade {
+  questionNumber: string;
+  maxMarks: number;
+  obtainedMarks: number;
+  remarks: string;
+}
+
 export interface AssessmentResult {
   extractedText: string;
   similarityScore: number;
   mlScore: number;
+  mlScoreDetails: {
+    correctness: number;
+    completeness: number;
+    clarity: number;
+  };
+  questionGrades: QuestionGrade[];
   feedback: string;
   keyConceptsFound: string[];
   missedConcepts: string[];
@@ -28,7 +41,7 @@ export interface PipelineLog {
 
 export type UserRole = 'teacher' | 'student';
 
-export type Subject = 'Physics' | 'History' | 'Mathematics' | 'Computer Science';
+export type Subject = string;
 
 export interface Submission {
   id: string;
@@ -43,7 +56,8 @@ export interface AttachedFile {
   id: string;
   name: string;
   mimeType: string;
-  data: string; // base64
+  data?: string; // base64
+  url?: string; // firebase storage url
 }
 
 export interface SubjectConfig {
@@ -55,4 +69,15 @@ export interface SubjectConfig {
 
 export interface SubjectConfigs {
   [key: string]: SubjectConfig;
+}
+
+export interface StudentDashboardProps {
+  currentSubject: Subject;
+  onSubjectChange: (subject: Subject) => void;
+  config: SubjectConfig;
+  onSubmissionComplete: (submission: Submission) => void;
+  onLogout: () => void;
+  submissions: Submission[];
+  studentName: string;
+  availableSubjects: string[];
 }
